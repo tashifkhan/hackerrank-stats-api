@@ -1,82 +1,69 @@
 # HackerRank Stats API
 
-A FastAPI + `uv` port of the original LeetCode Stats API, adapted for public HackerRank profiles.
+A FastAPI + `uv` service for exploring public HackerRank profiles, stats, and activity.
 
-## Features
-
-- Same route surface as the source project
-- FastAPI app with Swagger at `/docs`
-- Public HackerRank profile, badge, contest, score, recent challenge, and submission-history adapters
-- Heatmap endpoint compatible with the LeetCode API response shape
-- Root dashboard for quick username lookups
+Live dashboard at the root route (`/`) — enter any public HackerRank username to get a full profile view with heatmap, badges, recent submissions, and contest history.
 
 ## API Endpoints
 
-### Get User Statistics
+All endpoints accept a public HackerRank username and return JSON.
 
-```text
-GET /{username}
+### `GET /{username}`
+
+Aggregated stats: total solved, best ranking, reputation, contribution points, and submission calendar.
+
+```json
+{
+  "status": "success",
+  "totalSolved": 70,
+  "ranking": 1,
+  "contributionPoints": 5,
+  "reputation": 0,
+  "submissionCalendar": {}
+}
 ```
 
-Returns a LeetCode-compatible stats payload using public HackerRank data. Some LeetCode-specific fields, such as difficulty totals and acceptance rate, are not exposed by HackerRank and remain `0` for compatibility.
+### `GET /{username}/profile`
 
-### Get Contest Rankings
+Full profile: avatar, real name, country, company, school, skill tags, bio, social links, badges, recent submissions, and per-track submission stats.
 
-```text
-GET /{username}/contests
-```
+### `GET /{username}/heatmap`
 
-Returns public contest participation history and derived contest summary values when available.
+Daily contribution heatmap built from submission history, including current streak, longest streak, active days, and per-day activity levels (0–4).
 
-### Get User Profile
+> Note: HackerRank's public submission history endpoint may return empty data for some profiles even when activity exists.
 
-```text
-GET /{username}/profile
-```
+### `GET /{username}/badges`
 
-Returns public profile info, score-derived contribution values, badges, submission history, and recent challenges.
+Awarded badges and the inferred active badge (highest stars/level).
 
-### Get Contribution Heatmap Data
+### `GET /{username}/contests`
 
-```text
-GET /{username}/heatmap
-```
+Contest participation history, rating, global ranking, and top percentile. Returns an empty history for users with no contest participation.
 
-Returns normalized daily contribution data from HackerRank submission history.
-
-### Get User Badges
-
-```text
-GET /{username}/badges
-```
-
-Returns public badges and an inferred active badge.
-
-## Installation
+## Running Locally
 
 ```bash
 uv sync
-```
-
-## Run Locally
-
-```bash
 uv run uvicorn main:app --reload --host 0.0.0.0 --port 58352
 ```
 
-Then open:
+Open:
+- `http://localhost:58352/` — visual profile dashboard
+- `http://localhost:58352/docs` — Swagger UI
 
-- `http://localhost:58352/`
-- `http://localhost:58352/docs`
-
-## Tests
+## Testing
 
 ```bash
+# Quick smoke test with a known public profile
+curl http://localhost:58352/shauryarahlon_10
+
+# Run unit tests
 uv run python -m unittest discover -s tests
 ```
 
 ## Notes
 
-- The API is built on public HackerRank endpoints.
-- Route names and top-level response envelopes mirror the original LeetCode project.
-- Where HackerRank does not publish an exact LeetCode equivalent, the response keeps the field for compatibility and either derives a value from public score data or leaves it at the neutral default.
+- All data comes from public HackerRank endpoints — no authentication required.
+- Fields that HackerRank does not expose publicly are derived from score data or default to neutral values.
+- Difficulty breakdown (easy/medium/hard) and acceptance rate are not available from public HackerRank data and will always be `0`.

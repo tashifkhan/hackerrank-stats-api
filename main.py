@@ -12,7 +12,7 @@ from routes.stats import router as stats_router
 def create_app() -> FastAPI:
     app = FastAPI(
         title="HackerRank Stats API",
-        description="A FastAPI port of the LeetCode Stats API for HackerRank public profiles.",
+        description="A FastAPI service for exploring public HackerRank profiles, stats, and activity.",
         version="0.1.0",
     )
 
