@@ -55,7 +55,7 @@ HTML = """<!DOCTYPE html>
             gap: 10px;
             margin-bottom: 16px;
         }
-        .header h1 {
+.header h1 {
             font-size: clamp(1.6rem, 4vw, 2.5rem);
             font-weight: 700;
             margin: 0;
@@ -264,12 +264,16 @@ HTML = """<!DOCTYPE html>
             gap: 12px;
         }
         .heatmap-title { font-weight: 600; font-size: 15px; margin: 0; }
-        .heatmap-streaks { display: flex; gap: 20px; }
+        .heatmap-streaks {
+            display: flex;
+            gap: 20px;
+        }
         .streak-item { text-align: right; }
         .streak-val { font-size: 22px; font-weight: 700; color: var(--green-4); }
         .streak-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
         .heatmap-scroll { overflow-x: auto; padding-bottom: 4px; }
         .heatmap-svg { display: block; }
+        .heatmap-cell { rx: 2; ry: 2; }
         .heatmap-legend {
             display: flex;
             align-items: center;
@@ -387,6 +391,15 @@ HTML = """<!DOCTYPE html>
         .trend-up { color: var(--green-4); }
         .trend-down { color: var(--red); }
 
+        /* ── Loading skeleton ── */
+        .skeleton {
+            background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.4s infinite;
+            border-radius: 6px;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
         /* ── Error banner ── */
         .error-banner {
             background: rgba(248,81,73,0.1);
@@ -398,8 +411,35 @@ HTML = """<!DOCTYPE html>
             display: none;
         }
 
+        /* ── Year selector ── */
+        .year-selector {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        .year-pill {
+            padding: 4px 12px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            background: none;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: color 0.12s, border-color 0.12s, background 0.12s;
+        }
+        .year-pill:hover { color: var(--text); border-color: var(--text); }
+        .year-pill.active {
+            background: rgba(50,199,102,0.12);
+            border-color: var(--green-4);
+            color: var(--green-4);
+        }
+
         /* ── API Docs ── */
-        .api-docs { margin-top: 40px; }
+        .api-docs {
+            margin-top: 40px;
+        }
         .api-docs-title {
             font-size: 13px;
             font-weight: 600;
@@ -451,7 +491,10 @@ HTML = """<!DOCTYPE html>
             color: var(--muted);
             flex-wrap: wrap;
         }
-        .footer a { color: var(--muted); text-decoration: none; }
+        .footer a {
+            color: var(--muted);
+            text-decoration: none;
+        }
         .footer a:hover { color: var(--text); }
         .footer .sep { opacity: 0.35; }
 
@@ -596,6 +639,7 @@ HTML = """<!DOCTYPE html>
                         </div>
                     </div>
                 </div>
+                <div class="year-selector" id="d-year-selector"></div>
                 <div class="heatmap-scroll">
                     <div id="d-heatmap-svg-wrap"></div>
                 </div>
@@ -654,9 +698,22 @@ HTML = """<!DOCTYPE html>
 
 <script>
 const COLORS = ["#161b22", "#1a4731", "#196f3d", "#1e8449", "#32c766"];
-const DAY_SIZE = 12, DAY_GAP = 3, WEEKS = 53;
+const DAY_SIZE = 12, DAY_GAP = 3;
 
 function $(id) { return document.getElementById(id); }
+function el(tag, props = {}, ...children) {
+    const e = document.createElementNS ? document.createElementNS("http://www.w3.org/2000/svg", tag) : document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) e.setAttribute(k, v);
+    children.forEach(c => { if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return e;
+}
+function hel(tag, props = {}, ...children) {
+    const e = document.createElement(tag);
+    Object.assign(e, props);
+    if (props.class) e.className = props.class;
+    children.forEach(c => { if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return e;
+}
 function fmt(n) { return Number(n).toLocaleString(); }
 function fmtDate(ts) {
     if (!ts) return "";
@@ -680,20 +737,30 @@ function showError(msg) {
 }
 function clearError() { $("error-banner").style.display = "none"; }
 
-// ── Heatmap SVG ───────────────────────────────────────────────────────────────
-function buildHeatmap(dailyContributions) {
+// ── Heatmap SVG ──────────────────────────────────────────────────────────────
+// allContributions: full dailyContributions array
+// rangeStart, rangeEnd: Date objects (inclusive)
+function buildHeatmap(allContributions, rangeStart, rangeEnd) {
     const map = {};
-    for (const d of (dailyContributions || [])) map[d.date] = d;
+    for (const d of (allContributions || [])) map[d.date] = d;
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const startDate = new Date(today);
-    startDate.setDate(startDate.getDate() - (WEEKS * 7 - 1));
-    startDate.setDate(startDate.getDate() - startDate.getDay());
+    const end = new Date(Math.min(rangeEnd.getTime(), today.getTime()));
+    end.setHours(0, 0, 0, 0);
+
+    // align grid start to the Sunday on or before rangeStart
+    const gridStart = new Date(rangeStart);
+    gridStart.setHours(0, 0, 0, 0);
+    gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+
+    const msPerDay = 86400 * 1000;
+    const totalDays = Math.round((end - gridStart) / msPerDay) + 1;
+    const weeks = Math.ceil(totalDays / 7);
 
     const CELL = DAY_SIZE + DAY_GAP;
-    const svgW = WEEKS * CELL;
+    const svgW = weeks * CELL;
     const svgH = 7 * CELL + 20;
 
     const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -704,6 +771,7 @@ function buildHeatmap(dailyContributions) {
     svg.setAttribute("class", "heatmap-svg");
     svg.setAttribute("viewBox", `0 0 ${svgW} ${svgH}`);
 
+    // day labels (Mon, Wed, Fri)
     [1, 3, 5].forEach(d => {
         const t = document.createElementNS(ns, "text");
         t.setAttribute("x", -4);
@@ -716,14 +784,15 @@ function buildHeatmap(dailyContributions) {
     });
 
     const monthLabels = {};
-    const cur = new Date(startDate);
+    const cur = new Date(gridStart);
 
-    for (let w = 0; w < WEEKS; w++) {
+    for (let w = 0; w < weeks; w++) {
         for (let d = 0; d < 7; d++) {
-            if (cur > today) { cur.setDate(cur.getDate() + 1); continue; }
             const iso = cur.toISOString().slice(0, 10);
-            const entry = map[iso];
+            const inRange = cur >= rangeStart && cur <= end;
+            const entry = inRange ? map[iso] : null;
             const level = entry ? entry.level : 0;
+            const future = cur > end;
 
             const rect = document.createElementNS(ns, "rect");
             rect.setAttribute("x", w * CELL);
@@ -731,15 +800,17 @@ function buildHeatmap(dailyContributions) {
             rect.setAttribute("width", DAY_SIZE);
             rect.setAttribute("height", DAY_SIZE);
             rect.setAttribute("rx", 2);
-            rect.setAttribute("fill", COLORS[level] || COLORS[0]);
+            rect.setAttribute("fill", future ? "transparent" : (COLORS[level] || COLORS[0]));
 
-            const count = entry ? entry.count : 0;
-            const title = document.createElementNS(ns, "title");
-            title.textContent = `${count} submission${count !== 1 ? "s" : ""} on ${iso}`;
-            rect.appendChild(title);
+            if (!future) {
+                const count = entry ? entry.count : 0;
+                const title = document.createElementNS(ns, "title");
+                title.textContent = `${count} submission${count !== 1 ? "s" : ""} on ${iso}`;
+                rect.appendChild(title);
+            }
             svg.appendChild(rect);
 
-            if (cur.getDate() === 1 || (w === 0 && d === 0)) {
+            if (inRange && (cur.getDate() === 1 || (w === 0 && d === 0))) {
                 monthLabels[w] = cur.toLocaleString("en-US", { month: "short" });
             }
             cur.setDate(cur.getDate() + 1);
@@ -759,15 +830,81 @@ function buildHeatmap(dailyContributions) {
     return svg;
 }
 
+// ── Year selector ─────────────────────────────────────────────────────────────
+let _heatmapData = null;
+
+function buildYearSelector(firstActiveDate) {
+    const sel = $("d-year-selector");
+    sel.innerHTML = "";
+
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const firstYear = firstActiveDate
+        ? new Date(firstActiveDate).getFullYear()
+        : currentYear - 1;
+
+    const options = [{ label: "Last 365d", key: "365" }];
+    for (let y = currentYear; y >= Math.min(firstYear, currentYear); y--) {
+        options.push({ label: String(y), key: String(y) });
+    }
+
+    options.forEach(({ label, key }) => {
+        const btn = document.createElement("button");
+        btn.className = "year-pill" + (key === "365" ? " active" : "");
+        btn.textContent = label;
+        btn.dataset.range = key;
+        btn.addEventListener("click", () => {
+            sel.querySelectorAll(".year-pill").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            applyHeatmapRange(key);
+        });
+        sel.appendChild(btn);
+    });
+}
+
+function applyHeatmapRange(key) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let rangeStart, rangeEnd;
+    if (key === "365") {
+        rangeEnd = today;
+        rangeStart = new Date(today);
+        rangeStart.setDate(rangeStart.getDate() - 364);
+    } else {
+        const y = parseInt(key, 10);
+        rangeStart = new Date(y, 0, 1);
+        rangeEnd = y === today.getFullYear() ? today : new Date(y, 11, 31);
+    }
+
+    const contributions = _heatmapData?.dailyContributions || [];
+    const inRange = contributions.filter(d => {
+        const dt = new Date(d.date);
+        return dt >= rangeStart && dt <= rangeEnd;
+    });
+    const total = inRange.reduce((s, d) => s + d.count, 0);
+    const active = inRange.filter(d => d.count > 0).length;
+
+    $("d-heatmap-title").textContent = fmt(total) + " submissions";
+    $("d-heatmap-sub").textContent = active + " active days";
+
+    const wrap = $("d-heatmap-svg-wrap");
+    wrap.innerHTML = "";
+    wrap.appendChild(buildHeatmap(contributions, rangeStart, rangeEnd));
+}
+
 // ── Render functions ──────────────────────────────────────────────────────────
-function renderProfile(stats, profile) {
+function renderProfile(stats, profile, heatmap) {
+    // avatar
     const av = $("d-avatar");
     av.src = profile?.profile?.userAvatar || "";
     av.onerror = () => { av.style.display = "none"; };
 
+    // name / username
     $("d-name").textContent = profile?.profile?.realName || stats?.username || "—";
     $("d-username").textContent = "@" + (profile?.username || stats?.username || "");
 
+    // meta
     const meta = $("d-meta");
     meta.innerHTML = "";
     const addMeta = (icon, text, href) => {
@@ -790,13 +927,17 @@ function renderProfile(stats, profile) {
     if (profile?.githubUrl) addMeta('<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>', "GitHub", profile.githubUrl);
     if (profile?.linkedinUrl) addMeta('<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6zM2 9h4v12H2z"/><circle cx="4" cy="4" r="2"/></svg>', "LinkedIn", profile.linkedinUrl);
 
+    // stats
     $("d-solved").textContent = fmt(stats?.totalSolved ?? 0);
     $("d-ranking").textContent = stats?.ranking ? "#" + fmt(stats.ranking) : "—";
     $("d-points").textContent = fmt(stats?.contributionPoints ?? 0);
     $("d-rep").textContent = fmt(stats?.reputation ?? 0);
 
-    $("d-about").textContent = profile?.profile?.aboutMe || "";
+    // about
+    const about = $("d-about");
+    about.textContent = profile?.profile?.aboutMe || "";
 
+    // skills
     const skillsEl = $("d-skills");
     skillsEl.innerHTML = "";
     (profile?.profile?.skillTags || []).forEach(t => {
@@ -808,13 +949,11 @@ function renderProfile(stats, profile) {
 }
 
 function renderHeatmap(heatmap) {
+    _heatmapData = heatmap;
     $("d-streak-cur").textContent = (heatmap?.currentStreak ?? 0) + "d";
     $("d-streak-max").textContent = (heatmap?.longestStreak ?? 0) + "d";
-    $("d-heatmap-title").textContent = fmt(heatmap?.totalSubmissions ?? 0) + " submissions";
-    $("d-heatmap-sub").textContent = (heatmap?.activeDays ?? 0) + " active days";
-    const wrap = $("d-heatmap-svg-wrap");
-    wrap.innerHTML = "";
-    wrap.appendChild(buildHeatmap(heatmap?.dailyContributions || []));
+    buildYearSelector(heatmap?.firstActiveDate || "");
+    applyHeatmapRange("365");
 }
 
 function renderSubmissions(profile) {
@@ -896,7 +1035,7 @@ function renderContests(contests) {
     });
 }
 
-// ── Main load ─────────────────────────────────────────────────────────────────
+// ── Main load ────────────────────────────────────────────────────────────────
 async function loadDashboard(username) {
     clearError();
     $("empty-state").style.display = "none";
@@ -904,6 +1043,7 @@ async function loadDashboard(username) {
     $("search-btn").disabled = true;
     $("search-btn").textContent = "Loading…";
 
+    // reset
     ["d-name","d-username","d-solved","d-ranking","d-points","d-rep",
      "d-streak-cur","d-streak-max","d-heatmap-title","d-heatmap-sub"].forEach(id => {
         $(id).textContent = "—";
@@ -936,7 +1076,7 @@ async function loadDashboard(username) {
         }
 
         $("api-docs-section").style.display = "none";
-        renderProfile(stats, profile);
+        renderProfile(stats, profile, heatmap);
         renderHeatmap(heatmap);
         renderSubmissions(profile);
         renderBadges(badges, badges?.activeBadge || profile?.activeBadge);
@@ -949,7 +1089,7 @@ async function loadDashboard(username) {
     }
 }
 
-// ── Tab switching ─────────────────────────────────────────────────────────────
+// ── Tab switching ────────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
         document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
