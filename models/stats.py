@@ -15,6 +15,7 @@ class StatsResponse(BaseModel):
     acceptanceRate: float
     ranking: int
     contributionPoints: int
+    practiceScore: int
     reputation: int
     submissionCalendar: dict[str, int]
 
@@ -34,6 +35,7 @@ class StatsResponse(BaseModel):
             acceptanceRate=0.0,
             ranking=0,
             contributionPoints=0,
+            practiceScore=0,
             reputation=0,
             submissionCalendar={},
         )
