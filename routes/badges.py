@@ -1,16 +1,16 @@
 from fastapi import APIRouter
 
 from models.badges import BadgesResponse
-from models.unified import make_envelope
-from services import unified_mapper
-from services.hackerrank_service import HackerRankService
+from models.canonical import make_envelope
+from services import canonical_mapper
+from services.badges import get_user_badges as fetch_user_badges
 
-router = APIRouter()
+router = APIRouter(tags=["Canonical"])
 
 
 @router.get("/{username}/badges")
 async def get_user_badges(username: str):
-    badges_response, error = await HackerRankService.get_user_badges(username)
+    badges_response, error = await fetch_user_badges(username)
     if error:
         return make_envelope(
             username,
@@ -20,5 +20,5 @@ async def get_user_badges(username: str):
             message=error,
         )
 
-    data = unified_mapper.badges_from(badges_response)
+    data = canonical_mapper.badges_from(badges_response)
     return make_envelope(username, data, legacy=badges_response)
