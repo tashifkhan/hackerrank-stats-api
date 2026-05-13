@@ -2,11 +2,11 @@ import unittest
 from datetime import date
 from unittest.mock import patch
 
-from services.hackerrank_api import ResponseDecoder
+from services.decoders.common import ResponseDecoder
 
 
 class HeatmapDecoderTests(unittest.TestCase):
-    @patch("services.hackerrank_api.ResponseDecoder._utc_today")
+    @patch("services.decoders.common.ResponseDecoder._utc_today")
     def test_decode_heatmap_builds_continuous_daily_series(self, mock_utc_today):
         mock_utc_today.return_value = date(2024, 1, 5)
         submission_history = {
