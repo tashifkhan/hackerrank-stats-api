@@ -1,33 +1,25 @@
-"""Builds the unified cross-platform card for HackerRank by reusing the existing
-``HackerRankService`` fetchers, deriving topic analysis from per-track practice
-scores and a rating time series from contest history.
+"""Builds the canonical cross-platform card for HackerRank by reusing the existing
+``HackerRankService`` fetchers, deriving topic analysis from per-challenge
+tracks and a rating time series from contest history.
 
-See ../UNIFIED_SCHEMA.md for the wire format.
+See ../CANONICAL_SCHEMA.md for the wire format.
 """
 
 import asyncio
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from models.unified import (
-    BadgeItem,
-    ContestHistoryItem,
-    HeatDay,
-    RatingPoint,
-    TopicCount,
-    UnifiedBadges,
-    UnifiedCard,
-    UnifiedContests,
-    UnifiedHeatmap,
-    UnifiedProfile,
-    UnifiedRating,
-    UnifiedSocial,
-    UnifiedStats,
-    UnifiedSummary,
-    YearContribution,
-)
-from services.hackerrank_api import HackerRankAPI, ResponseDecoder
+from models.canonical.badges import BadgeItem, Badges
+from models.canonical.card import Card
+from models.canonical.contests import ContestHistoryItem, Contests
+from models.canonical.heatmap import HeatDay, Heatmap, YearContribution
+from models.canonical.profile import Profile, Social
+from models.canonical.rating import RatingPoint, Rating
+from models.canonical.stats import TopicCount, Stats
+from models.canonical.summary import Summary
+from services import topics
 from services.hackerrank_service import HackerRankService
+from services.heatmap_window import window_heatmap
 
 
 def _ts_to_date(timestamp) -> Optional[str]:
@@ -41,11 +33,11 @@ def _ts_to_date(timestamp) -> Optional[str]:
 
 # --- pure converters --------------------------------------------------------
 
-def profile_from(profile_response, username: str) -> UnifiedProfile:
+def profile_from(profile_response, username: str) -> Profile:
     if profile_response is None:
-        return UnifiedProfile(username=username)
+        return Profile(username=username)
     p = profile_response.profile
-    return UnifiedProfile(
+    return Profile(
         displayName=p.realName or None,
         username=profile_response.username or username,
         avatar=p.userAvatar or None,
@@ -54,7 +46,7 @@ def profile_from(profile_response, username: str) -> UnifiedProfile:
         company=p.company or None,
         bio=p.aboutMe or None,
         websites=list(p.websites or []),
-        social=UnifiedSocial(
+        social=Social(
             github=profile_response.githubUrl,
             twitter=profile_response.twitterUrl,
             linkedin=profile_response.linkedinUrl,
@@ -63,41 +55,25 @@ def profile_from(profile_response, username: str) -> UnifiedProfile:
     )
 
 
-def topics_from_scores(scores_data) -> List[TopicCount]:
-    """Per-track practice score -> topic analysis bars."""
-    if not scores_data:
-        return []
-    tracks = ResponseDecoder._active_tracks(scores_data)
-    topics = [
-        TopicCount(
-            topic=str(track.get("name")),
-            count=int(round(ResponseDecoder._practice_score(track))),
-        )
-        for track in tracks
-        if track.get("name")
-    ]
-    return sorted(topics, key=lambda t: t.count, reverse=True)
-
-
-def stats_from(stats_response, topics: List[TopicCount]) -> UnifiedStats:
+def stats_from(stats_response, topic_analysis: List[TopicCount]) -> Stats:
     if stats_response is None:
-        return UnifiedStats(topicAnalysis=topics)
-    return UnifiedStats(
+        return Stats(topicAnalysis=topic_analysis)
+    return Stats(
         totalSolved=stats_response.totalSolved,
         totalQuestions=stats_response.totalQuestions or None,
-        acceptanceRate=stats_response.acceptanceRate,
+        acceptanceRate=None,
         byDifficulty={
             "easy": stats_response.easySolved,
             "medium": stats_response.mediumSolved,
             "hard": stats_response.hardSolved,
         },
-        topicAnalysis=topics,
+        topicAnalysis=topic_analysis,
     )
 
 
-def contests_from(contest_response) -> UnifiedContests:
+def contests_from(contest_response) -> Contests:
     if contest_response is None:
-        return UnifiedContests()
+        return Contests()
     history = [
         ContestHistoryItem(
             name=entry.contest.title,
@@ -111,7 +87,7 @@ def contests_from(contest_response) -> UnifiedContests:
         for entry in contest_response.contestHistory
     ]
     max_rating = max((h.rating for h in history if h.rating is not None), default=None)
-    return UnifiedContests(
+    return Contests(
         count=contest_response.attendedContestsCount,
         rating=contest_response.rating or None,
         maxRating=max_rating,
@@ -122,19 +98,19 @@ def contests_from(contest_response) -> UnifiedContests:
     )
 
 
-def rating_from(contests: UnifiedContests) -> UnifiedRating:
+def rating_from(contests: Contests) -> Rating:
     history = [
         RatingPoint(timestamp=h.timestamp, rating=h.rating, contestName=h.name)
         for h in contests.history
         if h.rating is not None
     ]
-    return UnifiedRating(current=contests.rating, max=contests.maxRating, history=history)
+    return Rating(current=contests.rating, max=contests.maxRating, history=history)
 
 
-def heatmap_from(heatmap_response) -> UnifiedHeatmap:
+def heatmap_from(heatmap_response) -> Heatmap:
     if heatmap_response is None:
-        return UnifiedHeatmap()
-    return UnifiedHeatmap(
+        return Heatmap()
+    return Heatmap(
         totalSubmissions=heatmap_response.totalSubmissions,
         totalActiveDays=heatmap_response.activeDays,
         currentStreak=heatmap_response.currentStreak,
@@ -157,9 +133,9 @@ def heatmap_from(heatmap_response) -> UnifiedHeatmap:
     )
 
 
-def badges_from(badges_response) -> UnifiedBadges:
+def badges_from(badges_response) -> Badges:
     if badges_response is None:
-        return UnifiedBadges()
+        return Badges()
     items = [
         BadgeItem(id=str(b.id), name=b.displayName, icon=b.icon, level=None)
         for b in badges_response.badges
@@ -168,11 +144,11 @@ def badges_from(badges_response) -> UnifiedBadges:
     if badges_response.activeBadge:
         ab = badges_response.activeBadge
         active = BadgeItem(id=str(ab.id), name=ab.displayName, icon=ab.icon, level=None)
-    return UnifiedBadges(count=len(items), active=active, list=items)
+    return Badges(count=len(items), active=active, list=items)
 
 
-def summary_from(card: UnifiedCard) -> UnifiedSummary:
-    return UnifiedSummary(
+def summary_from(card: Card) -> Summary:
+    return Summary(
         totalSolved=card.stats.totalSolved,
         totalActiveDays=card.heatmap.totalActiveDays,
         totalContests=card.contests.count,
@@ -185,46 +161,38 @@ def summary_from(card: UnifiedCard) -> UnifiedSummary:
 
 # --- fetchers ---------------------------------------------------------------
 
-async def _topics(username: str) -> List[TopicCount]:
-    scores, error = await HackerRankAPI.fetch_user_scores(username)
-    if error:
-        return []
-    return topics_from_scores(scores)
-
-
-async def build_stats(username: str) -> UnifiedStats:
+async def build_stats(username: str) -> Stats:
     stats_response, _ = await HackerRankService.get_user_stats(username)
-    return stats_from(stats_response, await _topics(username))
+    return stats_from(stats_response, await topics.build_topic_analysis(username))
 
 
-async def build_contests(username: str) -> UnifiedContests:
+async def build_contests(username: str) -> Contests:
     contest_response, _ = await HackerRankService.get_contest_ranking(username)
     return contests_from(contest_response)
 
 
-async def build_rating(username: str) -> UnifiedRating:
+async def build_rating(username: str) -> Rating:
     return rating_from(await build_contests(username))
 
 
-async def build_card(username: str) -> UnifiedCard:
-    profile_response, stats_response, contest_response, badges_response, heatmap_response, scores = (
+async def build_card(username: str) -> Card:
+    profile_response, stats_response, contest_response, badges_response, heatmap_response, topic_analysis = (
         await asyncio.gather(
             HackerRankService.get_user_profile(username),
             HackerRankService.get_user_stats(username),
             HackerRankService.get_contest_ranking(username),
             HackerRankService.get_user_badges(username),
             HackerRankService.get_user_heatmap(username),
-            HackerRankAPI.fetch_user_scores(username),
+            topics.build_topic_analysis(username),
         )
     )
-    topics = topics_from_scores(scores[0]) if not scores[1] else []
     contests = contests_from(contest_response[0])
-    return UnifiedCard(
+    return Card(
         username=username,
         profile=profile_from(profile_response[0], username),
-        stats=stats_from(stats_response[0], topics),
+        stats=stats_from(stats_response[0], topic_analysis),
         contests=contests,
         rating=rating_from(contests),
-        heatmap=heatmap_from(heatmap_response[0]),
+        heatmap=window_heatmap(heatmap_from(heatmap_response[0]), "all", None),
         badges=badges_from(badges_response[0]),
     )
