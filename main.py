@@ -7,6 +7,7 @@ from routes.docs import router as docs_router
 from routes.heatmap import router as heatmap_router
 from routes.profiles import router as profiles_router
 from routes.stats import router as stats_router
+from routes.unified import router as unified_router
 
 
 def create_app() -> FastAPI:
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
     app.include_router(profiles_router)
     app.include_router(badges_router)
     app.include_router(heatmap_router)
+    app.include_router(unified_router)
     app.include_router(stats_router)
     return app
 
