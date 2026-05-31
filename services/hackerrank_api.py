@@ -138,12 +138,37 @@ class ResponseDecoder:
         if not isinstance(raw_history, dict):
             return {}
 
+        # HackerRank's submission_histories endpoint keys entries either by
+        # epoch-second timestamps (legacy) or ISO date strings (current, e.g.
+        # ``"2019-09-01"``). Keep any key that resolves to a real date.
         history: dict[str, int] = {}
-        for timestamp, count in raw_history.items():
-            if not str(timestamp).isdigit():
+        for key, count in raw_history.items():
+            if ResponseDecoder._history_key_to_date(key) is None:
                 continue
-            history[str(timestamp)] = ResponseDecoder._safe_int(count)
+            history[str(key)] = ResponseDecoder._safe_int(count)
         return history
+
+    @staticmethod
+    def _history_key_to_date(key: object) -> "date | None":
+        """Resolve a submission-history key (epoch seconds or ISO date) to a date."""
+        text = str(key).strip()
+        if not text:
+            return None
+        if text.isdigit():
+            try:
+                return datetime.fromtimestamp(int(text), tz=timezone.utc).date()
+            except (ValueError, OverflowError, OSError):
+                return None
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            parts = text.split("-")
+            if len(parts) == 3:
+                try:
+                    return date(int(parts[0]), int(parts[1]), int(parts[2]))
+                except (ValueError, TypeError):
+                    return None
+            return None
 
     @staticmethod
     def _utc_today() -> date:
@@ -518,8 +543,10 @@ class ResponseDecoder:
     @staticmethod
     def decode_heatmap(username: str, submission_history: dict[str, int]) -> HeatmapResponse:
         date_counts: dict[date, int] = {}
-        for timestamp, count in submission_history.items():
-            contribution_date = datetime.fromtimestamp(int(timestamp), tz=timezone.utc).date()
+        for key, count in submission_history.items():
+            contribution_date = ResponseDecoder._history_key_to_date(key)
+            if contribution_date is None:
+                continue
             date_counts[contribution_date] = date_counts.get(contribution_date, 0) + ResponseDecoder._safe_int(count)
 
         if not date_counts:
