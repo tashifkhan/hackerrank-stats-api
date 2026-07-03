@@ -10,14 +10,15 @@ All endpoints accept a public HackerRank username and return JSON.
 
 ### `GET /{username}`
 
-Aggregated stats: total solved, best ranking, reputation, contribution points, and submission calendar.
+Aggregated stats: solved challenge count, best active practice-track rank, practice score, reputation, profile level, and submission calendar.
 
 ```json
 {
   "status": "success",
-  "totalSolved": 70,
-  "ranking": 1,
+  "totalSolved": 8,
+  "ranking": 527450,
   "contributionPoints": 5,
+  "practiceScore": 70,
   "reputation": 0,
   "submissionCalendar": {}
 }
@@ -65,5 +66,6 @@ uv run python -m unittest discover -s tests
 ## Notes
 
 - All data comes from public HackerRank endpoints — no authentication required.
-- Fields that HackerRank does not expose publicly are derived from score data or default to neutral values.
-- Difficulty breakdown (easy/medium/hard) and acceptance rate are not available from public HackerRank data and will always be `0`.
+- `practiceScore` is HackerRank's per-track score total. It is not the same thing as solved challenge count.
+- `ranking` is the best rank among tracks with non-zero practice score. It is not a global profile rank.
+- Difficulty breakdown (easy/medium/hard), platform-wide totals, and acceptance rate are not available from public HackerRank data and default to neutral/null values in the canonical payload.

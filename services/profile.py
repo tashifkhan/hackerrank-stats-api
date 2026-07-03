@@ -1,0 +1,38 @@
+import asyncio
+
+from services.client import HackerRankAPI
+from services.decoders.profile import decode_profile
+
+
+async def get_user_profile(username: str):
+    profile_data, scores_data, badges_data, submission_history, recent_challenges_data = await asyncio.gather(
+        HackerRankAPI.fetch_user_profile(username),
+        HackerRankAPI.fetch_user_scores(username),
+        HackerRankAPI.fetch_user_badges(username),
+        HackerRankAPI.fetch_user_submission_history(username),
+        HackerRankAPI.fetch_all_recent_challenges(username),
+    )
+
+    profile, error = profile_data
+    if error:
+        return None, error
+
+    scores, scores_error = scores_data
+    if scores_error:
+        return None, scores_error
+
+    badges, badges_error = badges_data
+    if badges_error:
+        return None, badges_error
+
+    history, history_error = submission_history
+    if history_error:
+        return None, history_error
+
+    recent_challenges, recent_error = recent_challenges_data
+    if recent_error:
+        return None, recent_error
+
+    return decode_profile(profile, scores, badges, history, recent_challenges), None
+
+__all__ = ["get_user_profile"]

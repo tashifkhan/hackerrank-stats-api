@@ -2,8 +2,7 @@ import html
 import math
 import re
 from datetime import date, datetime, timedelta, timezone
-
-import httpx
+from typing import Optional
 
 from models.badges import Badge, BadgesResponse, UpcomingBadge
 from models.contests import ContestBadge, ContestHistoryEntry, ContestInfo, ContestRankingResponse
@@ -12,138 +11,45 @@ from models.profiles import Contribution, ProfileResponse, RecentSubmission, Use
 from models.stats import StatsResponse
 
 
-class HackerRankAPI:
-    PROFILE_URL = "https://www.hackerrank.com/rest/contests/master/hackers/{username}/profile"
-    SCORES_URL = "https://www.hackerrank.com/rest/hackers/{username}/scores_elo"
-    BADGES_URL = "https://www.hackerrank.com/rest/hackers/{username}/badges"
-    CONTESTS_URL = "https://www.hackerrank.com/rest/hackers/{username}/contest_participation"
-    RATINGS_URL = "https://www.hackerrank.com/rest/hackers/{username}/rating_histories_elo"
-    SUBMISSIONS_URL = "https://www.hackerrank.com/rest/hackers/{username}/submission_histories"
-    RECENT_CHALLENGES_URL = "https://www.hackerrank.com/rest/hackers/{username}/recent_challenges"
-    HEADERS = {
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    }
-
-    @staticmethod
-    async def fetch_user_profile(username: str) -> tuple[dict | None, str | None]:
-        data, error = await HackerRankAPI._get_json(HackerRankAPI.PROFILE_URL.format(username=username))
-        if error:
-            return None, error
-        model = data.get("model") if isinstance(data, dict) else None
-        if not model:
-            return None, "user does not exist"
-        return model, None
-
-    @staticmethod
-    async def fetch_user_scores(username: str) -> tuple[list[dict], str | None]:
-        data, error = await HackerRankAPI._get_json(
-            HackerRankAPI.SCORES_URL.format(username=username),
-            default=[],
-            tolerate_statuses={404},
-        )
-        if error:
-            return [], error
-        return data if isinstance(data, list) else [], None
-
-    @staticmethod
-    async def fetch_user_badges(username: str) -> tuple[dict, str | None]:
-        data, error = await HackerRankAPI._get_json(
-            HackerRankAPI.BADGES_URL.format(username=username),
-            default={"models": [], "version": 0},
-            tolerate_statuses={404},
-        )
-        if error:
-            return {"models": [], "version": 0}, error
-        return data if isinstance(data, dict) else {"models": [], "version": 0}, None
-
-    @staticmethod
-    async def fetch_user_contests(username: str) -> tuple[dict, str | None]:
-        data, error = await HackerRankAPI._get_json(
-            HackerRankAPI.CONTESTS_URL.format(username=username),
-            params={"offset": 0, "limit": 50},
-            default={"models": [], "total": 0},
-            tolerate_statuses={404},
-        )
-        if error:
-            return {"models": [], "total": 0}, error
-        return data if isinstance(data, dict) else {"models": [], "total": 0}, None
-
-    @staticmethod
-    async def fetch_user_ratings(username: str) -> tuple[dict, str | None]:
-        data, error = await HackerRankAPI._get_json(
-            HackerRankAPI.RATINGS_URL.format(username=username),
-            default={"models": []},
-            tolerate_statuses={404},
-        )
-        if error:
-            return {"models": []}, error
-        return data if isinstance(data, dict) else {"models": []}, None
-
-    @staticmethod
-    async def fetch_user_submission_history(username: str) -> tuple[dict[str, int], str | None]:
-        data, error = await HackerRankAPI._get_json(
-            HackerRankAPI.SUBMISSIONS_URL.format(username=username),
-            default={},
-            tolerate_statuses={404},
-        )
-        if error:
-            return {}, error
-        return ResponseDecoder.parse_submission_history(data), None
-
-    @staticmethod
-    async def fetch_recent_challenges(username: str) -> tuple[dict, str | None]:
-        data, error = await HackerRankAPI._get_json(
-            HackerRankAPI.RECENT_CHALLENGES_URL.format(username=username),
-            params={"limit": 20, "response_version": "v2"},
-            default={"models": [], "cursor": None, "last_page": True},
-            tolerate_statuses={404, 500},
-        )
-        if error:
-            return {"models": [], "cursor": None, "last_page": True}, error
-        return data if isinstance(data, dict) else {"models": [], "cursor": None, "last_page": True}, None
-
-    @staticmethod
-    async def _get_json(
-        url: str,
-        params: dict | None = None,
-        default: dict | list | None = None,
-        tolerate_statuses: set[int] | None = None,
-    ) -> tuple[dict | list | None, str | None]:
-        tolerate_statuses = tolerate_statuses or set()
-        try:
-            async with httpx.AsyncClient(headers=HackerRankAPI.HEADERS, follow_redirects=True, timeout=20.0) as client:
-                response = await client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            return default, str(exc)
-
-        if response.status_code == 404:
-            return default, "user does not exist"
-
-        if response.status_code in tolerate_statuses:
-            return default, None
-
-        if response.status_code >= 400:
-            return default, f"HTTP {response.status_code}"
-
-        try:
-            return response.json(), None
-        except ValueError:
-            return default, "invalid response from HackerRank"
-
-
 class ResponseDecoder:
+    HACKERRANK_BASE_URL = "https://www.hackerrank.com"
+
     @staticmethod
     def parse_submission_history(raw_history: object) -> dict[str, int]:
         if not isinstance(raw_history, dict):
             return {}
 
+        # HackerRank's submission_histories endpoint keys entries either by
+        # epoch-second timestamps (legacy) or ISO date strings (current, e.g.
+        # ``"2019-09-01"``). Keep any key that resolves to a real date.
         history: dict[str, int] = {}
-        for timestamp, count in raw_history.items():
-            if not str(timestamp).isdigit():
+        for key, count in raw_history.items():
+            if ResponseDecoder._history_key_to_date(key) is None:
                 continue
-            history[str(timestamp)] = ResponseDecoder._safe_int(count)
+            history[str(key)] = ResponseDecoder._safe_int(count)
         return history
+
+    @staticmethod
+    def _history_key_to_date(key: object) -> "date | None":
+        """Resolve a submission-history key (epoch seconds or ISO date) to a date."""
+        text = str(key).strip()
+        if not text:
+            return None
+        if text.isdigit():
+            try:
+                return datetime.fromtimestamp(int(text), tz=timezone.utc).date()
+            except (ValueError, OverflowError, OSError):
+                return None
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            parts = text.split("-")
+            if len(parts) == 3:
+                try:
+                    return date(int(parts[0]), int(parts[1]), int(parts[2]))
+                except (ValueError, TypeError):
+                    return None
+            return None
 
     @staticmethod
     def _utc_today() -> date:
@@ -194,6 +100,13 @@ class ResponseDecoder:
         text = str(value).strip()
         if text.isdigit():
             return int(text)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp())
+        except ValueError:
+            pass
         for pattern in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
             try:
                 dt = datetime.strptime(text, pattern)
@@ -258,7 +171,8 @@ class ResponseDecoder:
         ranks = [
             ResponseDecoder._safe_int(track.get("practice", {}).get("rank"))
             for track in scores
-            if ResponseDecoder._safe_int(track.get("practice", {}).get("rank")) > 0
+            if ResponseDecoder._practice_score(track) > 0
+            and ResponseDecoder._safe_int(track.get("practice", {}).get("rank")) > 0
         ]
         return min(ranks) if ranks else 0
 
@@ -267,9 +181,56 @@ class ResponseDecoder:
         return int(round(sum(ResponseDecoder._practice_score(track) for track in scores)))
 
     @staticmethod
+    def _challenge_identity(challenge: dict) -> str:
+        return str(
+            challenge.get("ch_slug")
+            or challenge.get("slug")
+            or challenge.get("url")
+            or challenge.get("name")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _solved_challenge_count(recent_challenges_data: dict | None) -> int:
+        if not isinstance(recent_challenges_data, dict):
+            return 0
+        models = recent_challenges_data.get("models", []) or []
+        identities = {
+            ResponseDecoder._challenge_identity(challenge)
+            for challenge in models
+            if isinstance(challenge, dict)
+        }
+        identities.discard("")
+        return len(identities)
+
+    @staticmethod
+    def _badge_solved_count(badges_data: dict | None) -> int:
+        if not isinstance(badges_data, dict):
+            return 0
+        models = badges_data.get("models", []) or []
+        return sum(
+            ResponseDecoder._safe_int(badge.get("solved"))
+            for badge in models
+            if isinstance(badge, dict)
+        )
+
+    @staticmethod
     def _badge_icon(badge_data: dict) -> str:
-        icon = badge_data.get("icon")
-        if isinstance(icon, str):
+        icon = (
+            badge_data.get("icon")
+            or badge_data.get("badge_icon")
+            or badge_data.get("badge_image")
+            or badge_data.get("image")
+            or badge_data.get("url")
+        )
+        if isinstance(icon, dict):
+            icon = icon.get("small") or icon.get("medium") or icon.get("large") or icon.get("url")
+        if isinstance(icon, str) and icon.strip():
+            icon = icon.strip()
+            if icon.startswith("//"):
+                return f"https:{icon}"
+            if icon.startswith("/"):
+                return f"{ResponseDecoder.HACKERRANK_BASE_URL}{icon}"
             return icon
         return ""
 
@@ -300,13 +261,22 @@ class ResponseDecoder:
         return ResponseDecoder._decode_badge_item(best)
 
     @staticmethod
-    def decode_stats(profile_data: dict, scores_data: list[dict], submission_history: dict[str, int]) -> StatsResponse:
+    def decode_stats(
+        profile_data: dict,
+        scores_data: list[dict],
+        submission_history: dict[str, int],
+        badges_data: dict | None = None,
+        recent_challenges_data: dict | None = None,
+    ) -> StatsResponse:
         total_practice_score = ResponseDecoder._total_practice_score(scores_data)
+        solved_challenges = ResponseDecoder._badge_solved_count(badges_data)
+        if solved_challenges <= 0:
+            solved_challenges = ResponseDecoder._solved_challenge_count(recent_challenges_data)
         return StatsResponse(
             status="success",
             message="retrieved",
-            totalSolved=total_practice_score,
-            totalQuestions=total_practice_score,
+            totalSolved=solved_challenges,
+            totalQuestions=0,
             easySolved=0,
             totalEasy=0,
             mediumSolved=0,
@@ -316,6 +286,7 @@ class ResponseDecoder:
             acceptanceRate=0.0,
             ranking=ResponseDecoder._best_rank(scores_data),
             contributionPoints=ResponseDecoder._safe_int(profile_data.get("level")),
+            practiceScore=total_practice_score,
             reputation=ResponseDecoder._safe_int(profile_data.get("followers_count")),
             submissionCalendar=submission_history,
         )
@@ -333,26 +304,33 @@ class ResponseDecoder:
         active_tracks = ResponseDecoder._active_tracks(scores_data)
         total_practice_score = ResponseDecoder._total_practice_score(scores_data)
         total_submissions = sum(submission_history.values())
+        solved_challenges = ResponseDecoder._badge_solved_count(badges_data)
+        if solved_challenges <= 0:
+            solved_challenges = ResponseDecoder._solved_challenge_count(recent_challenges_data)
 
         skill_tags = [str(track.get("name")) for track in active_tracks if track.get("name")]
         website = str(profile_data.get("website") or "").strip()
 
-        submission_rows = [
+        practice_rows = []
+        for track in sorted(active_tracks, key=ResponseDecoder._practice_score, reverse=True)[:5]:
+            score = ResponseDecoder._safe_int(track.get("practice", {}).get("score"))
+            rank = ResponseDecoder._safe_int(track.get("practice", {}).get("rank"))
+            practice_rows.append(
+                {
+                    "difficulty": str(track.get("name") or "Track"),
+                    "count": score,
+                    "submissions": 0,
+                    "rank": rank,
+                }
+            )
+
+        attempt_rows = [
             {
                 "difficulty": "All",
                 "count": total_submissions,
                 "submissions": total_submissions,
             }
         ]
-        for track in sorted(active_tracks, key=ResponseDecoder._practice_score, reverse=True)[:5]:
-            score = ResponseDecoder._safe_int(track.get("practice", {}).get("score"))
-            submission_rows.append(
-                {
-                    "difficulty": str(track.get("name") or "Track"),
-                    "count": score,
-                    "submissions": score,
-                }
-            )
 
         recent_submissions = []
         for challenge in recent_challenges_data.get("models", []):
@@ -367,13 +345,15 @@ class ResponseDecoder:
             recent_submissions.append(
                 RecentSubmission(
                     title=title,
-                    titleSlug=str(challenge.get("slug") or ResponseDecoder._slugify(title)),
+                    titleSlug=str(challenge.get("ch_slug") or challenge.get("slug") or ResponseDecoder._slugify(title)),
                     timestamp=ResponseDecoder._to_timestamp(
                         challenge.get("solved_at")
                         or challenge.get("created_at")
                         or challenge.get("timestamp")
+                        or challenge.get("updated_at")
+                        or challenge.get("last_solved_at")
                     ),
-                    statusDisplay=str(challenge.get("status") or "Solved"),
+                    statusDisplay=str(challenge.get("status") or "Listed"),
                     lang=str(challenge.get("language") or challenge.get("lang") or ""),
                 )
             )
@@ -387,7 +367,7 @@ class ResponseDecoder:
             linkedinUrl=profile_data.get("linkedin_url") or None,
             contributions=Contribution(
                 points=total_practice_score,
-                questionCount=len(active_tracks),
+                questionCount=solved_challenges,
                 testcaseCount=total_submissions,
             ),
             profile=UserProfile(
@@ -408,8 +388,8 @@ class ResponseDecoder:
             upcomingBadges=[],
             activeBadge=ResponseDecoder._pick_active_badge(badges_raw),
             submitStats={
-                "acSubmissionNum": submission_rows,
-                "totalSubmissionNum": submission_rows,
+                "acSubmissionNum": practice_rows,
+                "totalSubmissionNum": attempt_rows,
             },
             submissionCalendar=submission_history,
             recentSubmissions=recent_submissions,
@@ -518,8 +498,10 @@ class ResponseDecoder:
     @staticmethod
     def decode_heatmap(username: str, submission_history: dict[str, int]) -> HeatmapResponse:
         date_counts: dict[date, int] = {}
-        for timestamp, count in submission_history.items():
-            contribution_date = datetime.fromtimestamp(int(timestamp), tz=timezone.utc).date()
+        for key, count in submission_history.items():
+            contribution_date = ResponseDecoder._history_key_to_date(key)
+            if contribution_date is None:
+                continue
             date_counts[contribution_date] = date_counts.get(contribution_date, 0) + ResponseDecoder._safe_int(count)
 
         if not date_counts:
@@ -596,3 +578,12 @@ class ResponseDecoder:
             dailyContributions=daily_contributions,
             yearlyContributions=yearly_contributions,
         )
+
+history_key_to_date = ResponseDecoder._history_key_to_date
+parse_submission_history = ResponseDecoder.parse_submission_history
+safe_float = ResponseDecoder._safe_float
+safe_int = ResponseDecoder._safe_int
+slugify = ResponseDecoder._slugify
+strip_html = ResponseDecoder._strip_html
+to_timestamp = ResponseDecoder._to_timestamp
+utc_today = ResponseDecoder._utc_today

@@ -1,0 +1,2 @@
+PLATFORM = "hackerrank"
+CATEGORY = "fundamentals"
