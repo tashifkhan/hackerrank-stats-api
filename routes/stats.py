@@ -1,11 +1,31 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
-from models.stats import StatsResponse
 from models.canonical import make_envelope
+from models.stats import StatsResponse
 from services import canonical_mapper, topics
 from services.stats import get_user_stats as fetch_user_stats
+from services.stats_svg import error_svg_response, stats_svg_response
 
 router = APIRouter(tags=["Canonical"])
+
+
+@router.get("/{username}/stats/svg", summary="Stats SVG card")
+async def get_stats_svg(
+    username: str,
+    theme: str = Query("dark", description="Card theme: dark or light"),
+):
+    stats_response, error = await fetch_user_stats(username)
+    if error:
+        return error_svg_response(
+            error,
+            platform="hackerrank",
+            username=username,
+            theme=theme,
+        )
+    data = canonical_mapper.stats_from(
+        stats_response, await topics.build_topic_analysis(username)
+    )
+    return stats_svg_response("hackerrank", username, data, theme=theme)
 
 
 @router.get("/{username}/stats")
