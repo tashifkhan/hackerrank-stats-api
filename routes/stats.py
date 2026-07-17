@@ -4,7 +4,7 @@ from models.canonical import make_envelope
 from models.stats import StatsResponse
 from services import canonical_mapper, topics
 from services.stats import get_user_stats as fetch_user_stats
-from services.stats_svg import error_svg_response, stats_svg_response
+from services.stats_svg import error_svg_response, parse_exclude_list, stats_svg_response
 
 router = APIRouter(tags=["Canonical"])
 
@@ -13,6 +13,10 @@ router = APIRouter(tags=["Canonical"])
 async def get_stats_svg(
     username: str,
     theme: str = Query("dark", description="Card theme: dark or light"),
+    exclude: str | None = Query(
+        None,
+        description="Comma-separated topics to exclude from the topic bars",
+    ),
 ):
     stats_response, error = await fetch_user_stats(username)
     if error:
@@ -25,7 +29,13 @@ async def get_stats_svg(
     data = canonical_mapper.stats_from(
         stats_response, await topics.build_topic_analysis(username)
     )
-    return stats_svg_response("hackerrank", username, data, theme=theme)
+    return stats_svg_response(
+        "hackerrank",
+        username,
+        data,
+        theme=theme,
+        exclude=parse_exclude_list(exclude),
+    )
 
 
 @router.get("/{username}/stats")
