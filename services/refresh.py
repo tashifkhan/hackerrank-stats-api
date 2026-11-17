@@ -19,7 +19,10 @@ async def discover(username, cursor):
 
 async def tags(slug):
     model, error = await HackerRankAPI.fetch_challenge_detail(slug)
-    if error or not model: raise RuntimeError('Challenge metadata unavailable')
+    if error: raise RuntimeError('Challenge metadata unavailable')
+    # Removed or contest-only challenges answer 404 with no model. They have no
+    # track to count, and retrying them would stall the user's job forever.
+    if not model: return []
     track = (model.get('track') or {}).get('name')
     return [track] if track else []
 

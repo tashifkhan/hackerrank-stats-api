@@ -14,7 +14,8 @@ from core.runtime import state
 
 
 SKIP_PATHS = {"/", "/docs", "/redoc", "/openapi.json", "/favicon.ico"}
-PARTIAL_TTL_SECONDS = 300
+# Short, so the next request can advance an inline topic refresh.
+PARTIAL_TTL_SECONDS = 15
 INVALID_USER_MARKERS = ("user does not exist", "user not found", "not found on", "invalid username")
 
 

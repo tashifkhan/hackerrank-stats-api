@@ -65,10 +65,10 @@ class RequestBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("meta", response.json())
         self.assertEqual(response.json()["data"], [])
-        self.assertEqual(response.headers["cache-control"], "public, max-age=300")
-        self.assertEqual(response.headers.get_list("cache-control"), ["public, max-age=300"])
+        self.assertEqual(response.headers["cache-control"], "public, max-age=15")
+        self.assertEqual(response.headers.get_list("cache-control"), ["public, max-age=15"])
         self.assertIn('"status":"unavailable"', response.headers["x-data-state"])
-        self.assertEqual(stored.await_args.args[2], 300)
+        self.assertEqual(stored.await_args.args[2], 15)
 
 
 class StoreTests(unittest.IsolatedAsyncioTestCase):
