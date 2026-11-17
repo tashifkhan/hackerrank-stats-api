@@ -144,9 +144,40 @@ class InlineRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("attempts", state)
         self.assertNotIn("retryAt", state)
 
+    async def test_pending_reports_discovery_progress(self):
+        async def discovering(job):
+            job.data["ids"] = sorted(set(job.data.get("ids", [])) | {"a", "b", "c"})
+            job.data["cursor"] = "next"
+            await job.save()
+            return False
 
-if __name__ == "__main__":
-    unittest.main()
+        request = mock.Mock(meta={})
+        with mock.patch.object(enrichment, "state", mock.Mock(get=lambda: request)):
+            self.assertEqual(await enrichment.read_topics("demo", discovering), [])
+        self.assertEqual(request.meta["topics"]["status"], "pending")
+        self.assertEqual(request.meta["topics"]["discovered"], 3)
+
+    async def test_slice_looks_up_a_full_batch_concurrently(self):
+        ids = [f"p{i:02d}" for i in range(enrichment.TAG_BATCH + 3)]
+        in_flight = peak = 0
+
+        async def fetch_tags(slug):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return ["x"]
+
+        async def discover(subject, cursor):
+            return ids, None, True
+
+        job = jobs.Job("j", "o", {"kind": "topics", "subject": "demo"}, {})
+        job.save = mock.AsyncMock()
+        while not job.data.get("offset"):
+            await enrichment.refresh_topics(job, discover, fetch_tags)
+        self.assertEqual(job.data["offset"], enrichment.TAG_BATCH)
+        self.assertEqual(peak, enrichment.TAG_BATCH)
 
 
 class ChallengeTagTests(unittest.IsolatedAsyncioTestCase):
@@ -160,3 +191,7 @@ class ChallengeTagTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(refresh.HackerRankAPI, "fetch_challenge_detail", mock.AsyncMock(return_value=(None, "HTTP 503"))):
             with self.assertRaises(RuntimeError):
                 await refresh.tags("flaky")
+
+
+if __name__ == "__main__":
+    unittest.main()
