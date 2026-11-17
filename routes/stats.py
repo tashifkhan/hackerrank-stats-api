@@ -58,7 +58,7 @@ async def get_stats(username: str):
 
 @router.get("/{username}")
 async def get_summary(username: str):
-    card = await canonical_mapper.build_card(username)
+    card = await canonical_mapper.build_card(username, include_topics=False)
     stats_response, error = await fetch_user_stats(username)
     legacy = None if error else stats_response
     return make_envelope(username, canonical_mapper.summary_from(card), legacy=legacy)

@@ -1,6 +1,6 @@
 import hashlib
-import re
 import json
+import re
 from collections.abc import Callable
 
 from fastapi import Request
@@ -10,9 +10,11 @@ from starlette.responses import JSONResponse, Response
 from core.cache import decode_body, encode_body, get_json, redis_enabled, set_json
 from core.config import cache_rate_limit_settings as settings
 from core.rate_limit import RateLimitResult, check_rate_limit
+from core.runtime import state
 
 
 SKIP_PATHS = {"/", "/docs", "/redoc", "/openapi.json", "/favicon.ico"}
+PARTIAL_TTL_SECONDS = 300
 INVALID_USER_MARKERS = ("user does not exist", "user not found", "not found on", "invalid username")
 
 
@@ -27,7 +29,7 @@ def _client_ip(request: Request) -> str:
 
 
 def _handle_from_path(path: str) -> str | None:
-    if path in SKIP_PATHS or path.startswith("/docs/") or path.startswith("/redoc/"):
+    if path in SKIP_PATHS or path.startswith(("/docs/", "/redoc/", "/internal/")):
         return None
     segment = path.strip("/").split("/", 1)[0].strip()
     if not segment or "." in segment:
@@ -43,7 +45,7 @@ def _query_string(request: Request) -> str:
 def _cache_key(platform: str, request: Request) -> str:
     raw = f"{request.method}:{request.url.path}:{_query_string(request)}"
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    return f"cache:{platform}:{digest}"
+    return f"cache:v3:{platform}:{digest}"
 
 
 def _is_invalid_user(status_code: int, body: bytes) -> bool:
@@ -52,6 +54,9 @@ def _is_invalid_user(status_code: int, body: bytes) -> bool:
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
+        return False
+
+    if not isinstance(payload, dict):
         return False
 
     message = str(payload.get("message") or payload.get("detail") or "").lower()
@@ -101,6 +106,8 @@ class CacheRateLimitMiddleware(BaseHTTPMiddleware):
         if handle is None:
             return await call_next(request)
 
+        # A cache hit stays free: SVG cards embedded in READMEs arrive from a
+        # small pool of shared proxy addresses.
         key = _cache_key(self.platform, request)
         cached = await get_json(key)
         if cached is not None:
@@ -135,21 +142,40 @@ class CacheRateLimitMiddleware(BaseHTTPMiddleware):
         async for chunk in response.body_iterator:
             body += chunk
 
+        # Starlette lower-cases header names; keep every write lower-case too, or
+        # the response carries two Cache-Control headers.
         headers = dict(response.headers)
         headers.pop("content-length", None)
         headers["X-Cache"] = "MISS"
 
-        invalid_user = _is_invalid_user(response.status_code, body)
+        # Partial or stale data (topics still refreshing, upstream fallback) is
+        # cached briefly so the next request can pick up the newer result.
+        current = state.get()
+        if current and any(entry.get("status") != "complete" for entry in current.meta.values()):
+            headers["cache-control"] = f"public, max-age={min(PARTIAL_TTL_SECONDS, settings.cache_ttl_seconds)}"
+        # An upstream error envelope is not a cacheable success.
+        app_status = response.status_code
+        try:
+            payload = json.loads(body)
+            if app_status == 200 and isinstance(payload, dict) and payload.get("status") == "error":
+                app_status = 404 if _is_invalid_user(200, body) else 502
+                headers["cache-control"] = "no-store"
+        except (ValueError, TypeError):
+            pass
+        invalid_user = _is_invalid_user(app_status, body)
         if invalid_user:
             await set_json(invalid_key, {"invalid": True}, settings.invalid_user_cache_ttl_seconds)
-        elif response.status_code == 200:
-            headers.setdefault("Cache-Control", f"public, max-age={settings.cache_ttl_seconds}")
+        elif app_status == 200 and not any(
+            directive.strip().lower() in {"no-store", "no-cache", "private"}
+            for directive in headers.get("cache-control", "").split(",")
+        ):
+            headers.setdefault("cache-control", f"public, max-age={settings.cache_ttl_seconds}")
             ttl = _ttl_from_cache_control(headers, settings.cache_ttl_seconds)
-            await set_json(key, self._cached_response(response, body), ttl)
+            await set_json(key, self._cached_response(response, headers, body), ttl)
 
         return Response(
             content=body,
-            status_code=response.status_code,
+            status_code=app_status,
             headers=headers,
             media_type=response.media_type,
             background=response.background,
@@ -190,10 +216,10 @@ class CacheRateLimitMiddleware(BaseHTTPMiddleware):
         )
 
     @staticmethod
-    def _cached_response(response: Response, body: bytes) -> dict:
+    def _cached_response(response: Response, final_headers: dict, body: bytes) -> dict:
         headers = {
             key: value
-            for key, value in response.headers.items()
+            for key, value in final_headers.items()
             if key.lower() in {"content-type", "cache-control"}
         }
         return {

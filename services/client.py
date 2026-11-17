@@ -1,6 +1,18 @@
+import asyncio
+import json
+
 import httpx
+from fastapi import HTTPException
+
+from core.cache import get_json
+from core.jobs import enqueue
+from core.runtime import http_client, remaining, state
+from core.source import source
 
 from services.decoders.common import parse_submission_history
+
+
+UPSTREAM_TIMEOUT = 4.0
 
 
 class HackerRankAPI:
@@ -103,32 +115,38 @@ class HackerRankAPI:
         return data if isinstance(data, dict) else {"models": [], "cursor": None, "last_page": True}, None
 
     @staticmethod
-    async def fetch_all_recent_challenges(username: str, max_pages: int = 25) -> tuple[dict, str | None]:
+    async def fetch_all_recent_challenges(username: str) -> tuple[dict, str | None]:
+        """Newest page live, older pages from the refresh worker's history cache.
+
+        Paginating the whole history inline took up to 25 upstream round trips
+        and was one cause of the 10s timeouts. History is optional here: the
+        profile call decides whether the user exists, so this never errors.
+        """
+        (page, page_error), history = await asyncio.gather(
+            HackerRankAPI.fetch_recent_challenges(username),
+            get_json("hr:history:v2:" + username.lower()),
+        )
+        history = history or {}
         models: list[dict] = []
-        cursor: str | None = None
-        response_version = "v2"
-        last_page = False
+        seen: set[str] = set()
+        for model in [*(page.get("models") or []), *(history.get("models") or [])]:
+            if not isinstance(model, dict):
+                continue
+            slug = model.get("ch_slug")
+            if slug:
+                if slug in seen:
+                    continue
+                seen.add(slug)
+            models.append(model)
 
-        for _ in range(max_pages):
-            page, error = await HackerRankAPI.fetch_recent_challenges(username, cursor=cursor)
-            if error:
-                return {"models": models, "cursor": cursor, "last_page": last_page, "response_version": response_version}, error
-
-            if isinstance(page, dict):
-                page_models = page.get("models", []) or []
-                models.extend(model for model in page_models if isinstance(model, dict))
-                response_version = str(page.get("response_version") or response_version)
-                last_page = bool(page.get("last_page", True))
-                next_cursor = page.get("cursor")
-            else:
-                next_cursor = None
-                last_page = True
-
-            if last_page or not next_cursor or next_cursor == cursor:
-                break
-            cursor = str(next_cursor)
-
-        return {"models": models, "cursor": cursor, "last_page": last_page, "response_version": response_version}, None
+        complete = bool(history.get("complete")) or (not page_error and bool(page.get("last_page", True)))
+        if not complete:
+            queued = await enqueue("topics", username)
+            current = state.get()
+            if current:
+                status = "partial" if models else "pending" if queued else "unavailable"
+                current.meta["history"] = {"status": status, "complete": False}
+        return {"models": models, "cursor": None, "last_page": complete, "response_version": "v2"}, None
 
     @staticmethod
     async def fetch_challenge_detail(slug: str) -> tuple[dict | None, str | None]:
@@ -143,24 +161,29 @@ class HackerRankAPI:
         return model, None
 
     @staticmethod
-    async def _get_json(
+    async def _fetch_json(
         url: str,
         params: dict | None = None,
         default: dict | list | None = None,
         tolerate_statuses: set[int] | None = None,
     ) -> tuple[dict | list | None, str | None]:
         tolerate_statuses = tolerate_statuses or set()
+        async def fetch():
+            async with http_client() as client:
+                return await client.get(url, params=params, headers=HackerRankAPI.HEADERS, timeout=min(UPSTREAM_TIMEOUT, remaining()))
+
+        # httpx timeouts are per phase, so a slow trickle could outlive them.
+        # wait_for caps the whole call.
         try:
-            async with httpx.AsyncClient(headers=HackerRankAPI.HEADERS, follow_redirects=True, timeout=20.0) as client:
-                response = await client.get(url, params=params)
-        except httpx.HTTPError as exc:
-            return default, str(exc)
+            response = await asyncio.wait_for(fetch(), min(UPSTREAM_TIMEOUT, remaining()))
+        except (httpx.HTTPError, asyncio.TimeoutError):
+            return default, "HackerRank upstream unavailable"
+
+        if response.status_code in tolerate_statuses and response.status_code < 500:
+            return default, None
 
         if response.status_code == 404:
             return default, "user does not exist"
-
-        if response.status_code in tolerate_statuses:
-            return default, None
 
         if response.status_code >= 400:
             return default, f"HTTP {response.status_code}"
@@ -169,3 +192,17 @@ class HackerRankAPI:
             return response.json(), None
         except ValueError:
             return default, "invalid response from HackerRank"
+
+    @staticmethod
+    async def _get_json(url, params=None, default=None, tolerate_statuses=None):
+        """Cached upstream read. A failed refresh falls back to the last good payload."""
+        async def fetch():
+            data, error = await HackerRankAPI._fetch_json(url, params, default, tolerate_statuses)
+            if error:
+                raise HTTPException(404 if error == "user does not exist" else 502, error)
+            return data
+
+        try:
+            return await source("hr:" + url + json.dumps(params, sort_keys=True), fetch), None
+        except HTTPException as exc:
+            return default, str(exc.detail)

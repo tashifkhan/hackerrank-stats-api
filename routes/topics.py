@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from models.canonical import make_envelope
-from services import canonical_mapper
+from services.topics import build_topic_analysis
 
 
 router = APIRouter(tags=["Canonical"])
@@ -9,5 +9,4 @@ router = APIRouter(tags=["Canonical"])
 
 @router.get("/{username}/topics")
 async def get_topics(username: str):
-    stats = await canonical_mapper.build_stats(username)
-    return make_envelope(username, stats.topicAnalysis)
+    return make_envelope(username, await build_topic_analysis(username))
