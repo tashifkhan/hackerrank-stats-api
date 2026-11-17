@@ -175,7 +175,7 @@ async def build_rating(username: str) -> Rating:
     return rating_from(await build_contests(username))
 
 
-async def build_card(username: str) -> Card:
+async def build_card(username: str, include_topics: bool = True) -> Card:
     profile_response, stats_response, contest_response, badges_response, heatmap_response, topic_analysis = (
         await asyncio.gather(
             HackerRankService.get_user_profile(username),
@@ -183,7 +183,7 @@ async def build_card(username: str) -> Card:
             HackerRankService.get_contest_ranking(username),
             HackerRankService.get_user_badges(username),
             HackerRankService.get_user_heatmap(username),
-            topics.build_topic_analysis(username),
+            topics.build_topic_analysis(username) if include_topics else asyncio.sleep(0, result=[]),
         )
     )
     contests = contests_from(contest_response[0])

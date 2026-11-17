@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from core.middleware import CacheRateLimitMiddleware
+from core.runtime import RequestBudgetMiddleware
 
 from routes.badges import router as badges_router
 from routes.contests import router as contests_router
@@ -20,6 +21,10 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
+    # Last added runs first: CORS wraps the budget, so a 504 still carries CORS
+    # headers, and the budget wraps the cache so store calls count against it.
+    app.add_middleware(CacheRateLimitMiddleware, platform="hackerrank")
+    app.add_middleware(RequestBudgetMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -27,7 +32,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(CacheRateLimitMiddleware, platform="hackerrank")
 
     app.include_router(docs_router)
     app.include_router(contests_router)
