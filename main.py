@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from core.analytics import AnalyticsMiddleware
 from core.middleware import CacheRateLimitMiddleware
 from core.runtime import RequestBudgetMiddleware
 
@@ -25,6 +26,8 @@ def create_app() -> FastAPI:
     # headers, and the budget wraps the cache so store calls count against it.
     app.add_middleware(CacheRateLimitMiddleware, platform="hackerrank")
     app.add_middleware(RequestBudgetMiddleware)
+    # Outside the cache so cache hits and 429s are counted; inside CORS.
+    app.add_middleware(AnalyticsMiddleware, api="hackerrank")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
