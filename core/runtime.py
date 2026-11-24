@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 import httpx
 from starlette.responses import JSONResponse
 
+from core.cache_control import _no_store
+
 logger = logging.getLogger("stats_api")
 
 # Vercel kills the function at 10s; answer with our own 504 before that.
@@ -71,9 +73,19 @@ class RequestBudgetMiddleware:
                 if message["type"] == "http.response.start":
                     sent, status = True, message["status"]
                     # Enrichment state goes in a header so JSON bodies keep their shape.
+                    # The cache middleware turns partial state into a short TTL.
                     if current.meta:
                         headers = list(message.get("headers", []))
                         headers.append((b"x-data-state", json.dumps(current.meta, separators=(",", ":")).encode()))
+                        statuses = {
+                            str(entry.get("status") or "").lower()
+                            for entry in current.meta.values()
+                        }
+                        # With no store enabled the cache middleware never runs, so
+                        # keep stale/pending/unavailable fallbacks out of shared
+                        # caches here too. Partial keeps its short TTL.
+                        if statuses - {"complete", "partial"}:
+                            headers = _no_store(headers)
                         message["headers"] = headers
                 await send(message)
 
@@ -84,7 +96,7 @@ class RequestBudgetMiddleware:
                     raise
                 response = JSONResponse(
                     {"status": "error", "message": "Upstream request deadline exceeded"},
-                    status_code=504, headers={"Cache-Control": "no-store"},
+                    status_code=504, headers=_no_store({}),
                 )
                 await response(scope, receive, tracked)
             finally:

@@ -53,7 +53,7 @@ class RequestBudgetTests(unittest.IsolatedAsyncioTestCase):
             response = await request("/alice/topics")
         self.assertEqual(response.status_code, 504)
 
-    async def test_partial_topics_keep_body_shape_and_get_short_cache(self):
+    async def test_unavailable_topics_keep_body_shape_and_are_not_cached(self):
         stored = AsyncMock(return_value=True)
         with patch.object(middleware, "redis_enabled", return_value=True), patch.object(
             middleware, "get_json", AsyncMock(return_value=None)
@@ -65,10 +65,11 @@ class RequestBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("meta", response.json())
         self.assertEqual(response.json()["data"], [])
-        self.assertEqual(response.headers["cache-control"], "public, max-age=15")
-        self.assertEqual(response.headers.get_list("cache-control"), ["public, max-age=15"])
+        self.assertEqual(middleware.PARTIAL_TTL_SECONDS, 15)
+        self.assertEqual(response.headers.get_list("cache-control"), ["no-store"])
+        self.assertEqual(response.headers.get_list("cdn-cache-control"), ["no-store"])
         self.assertIn('"status":"unavailable"', response.headers["x-data-state"])
-        self.assertEqual(stored.await_args.args[2], 15)
+        stored.assert_not_awaited()
 
 
 class StoreTests(unittest.IsolatedAsyncioTestCase):
