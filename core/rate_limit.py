@@ -1,3 +1,4 @@
+import os
 """Atomic counters and backoff, in one bounded store call per dimension."""
 
 import time
@@ -40,7 +41,12 @@ class RateLimitResult:
 
 def _enabled():
     """REDIS_URL keeps the historical behaviour; a REST-only store must opt in."""
-    return bool(settings.redis_url or settings.rate_limit_enabled)
+    return bool(
+        getattr(settings, "oracle_redis_url", None)
+        or os.getenv("ORACLE_REDIS_URL")
+        or settings.redis_url
+        or settings.rate_limit_enabled
+    )
 
 
 async def check_rate_limit(key, limit, window_seconds, label):
